@@ -27,16 +27,32 @@ ORDER of manual commands:
 - leader : check timestamp, wait for the new one to get from NIST beacon
 
 - replace sleep(5) to call the cycle
+- flag to know if the cycle is close or not
+
 
 MESSAGE TYPES:
-    11  :   initiate Sending encrypted random number
+    11  :   initiate Sending encrypted random number (by leader)
     12  :   receive the encrypted random number
+
+    21  :   first round of dining, M = None, just checks if the sum of all the diffs is 0
+
+    31  :
+
 
 
 [error handling]
 Error Types:
         .error
                 01, Failed to read the command message
+
+
+
+TO DO ON THE SECOND ROUND OF DEVELOPMENT:
+
+- implement lastcall for leader to start the ordering
+    - closes the circle and no one can call .join event (if lastcall)
+    -
+
 
 """
 
@@ -76,7 +92,7 @@ joingroup = {}
 
 #ordergroup is the ordered group of members after the shuffle by the leader
 orderGroup = {}
-
+numberOfGroup = 0
 #Hardcoded leader nickname
 LEADERNICK = "LeaderBot"
 
@@ -86,7 +102,18 @@ nisturl = "https://beacon.nist.gov/rest/record/last"
 
 
 #temporary Global Variables
-tempsum = 0
+tempsum = None
+
+
+######################################
+#           Global Flags (reset)     #
+######################################
+lastcall = None
+
+
+
+
+
 
 
 ######################################
@@ -337,7 +364,7 @@ def leadannouncement(bot,trigger):
     Announces the leaders nick and pubkey
     only the leader would respond
     """
-    global orderGroup
+    global orderGroup,numberOfGroup
     if bot.nick == LEADERNICK:
         global pubkey,joingroup
         bot.say(".lead #nick=" + bot.nick + " #pubkey" + pubkey)
@@ -348,12 +375,23 @@ def leadannouncement(bot,trigger):
         shuffle(nicklist, NistSeed)
         bot.say(".order " + str(nicklist))
         orderGroup = str2list(str(nicklist).replace("Nick(", "")) #THIS IS REALLY DIRTY CODE!!!!!!
+        numberOfGroup = len(orderGroup)
+        bot.say(".numberofgroup " + str(numberOfGroup)) #announce the number of users in the circle
         readOrder(bot,orderGroup)
         print "Order list = " + str(orderGroup)#LOG
-        time.sleep(5) # delays for 5 seconds <-- should be replaced with some other way
+        time.sleep(5) # delays for 5 seconds <-- should be replaced with another other way
         bot.say(".commandme 11,"+LEADERNICK+","+leftNeighbour+",TEMP,EOM")
 
 
+
+@module.commands("numberofgroup")
+def number_of_group(bot,trigger):
+    """
+    sets the numberofgroup variable to know how many are in the circle
+    """
+    global numberOfGroup
+    numberOfGroup = int(trigger.group(2))
+    print "Number of group="+ str(numberOfGroup) #4debug
 
 
 @module.commands("lead")
@@ -422,8 +460,24 @@ def readcommand(bot,trigger):
                     bot.say(query)
                 leftRand = decrypt_RSA(privkey, msg)
                 print leftRand #4debug
-                tempSum = tempRand - int(leftRand)
-                bot.say(".randdiff "+ str(tempSum))
+                temp_sum = tempRand - int(leftRand)
+               # bot.say(".randdiff "+ str(temp_sum))
+                time.sleep(tempRand % 5) #random sleep to prevent overlap of function runs (huh?)
+                bot.say(".commandme 21,"+bot.nick+","+LEADERNICK+","+str(temp_sum)+",EOM")
+
+        # 21 - first round of dining, M = None, just checks if the sum of all the diffs is 0
+        if msgType == "21" and toNick == LEADERNICK and bot.nick == LEADERNICK:
+            global tempsum
+            if tempsum == None and (leftRand):
+                tempsum = tempRand - int(leftRand)
+                tempsum += int(msg)
+            elif not (tempsum == 0):
+                tempsum += int(msg)
+            if tempsum == 0:
+                bot.say("let's dine") #the sum has been 0 so the messaging is alright, let's dine
+                #initiate the order of messaging!
+
+
 
 
 
@@ -438,15 +492,22 @@ def readcommand(bot,trigger):
 
 
 
-# @module.commands('randdiff')       COMMENTED OUT ! SHOULD COMPUTE THE SUM OF ALL THE DIFF RANDS
+@module.commands('randdiff')      # COMMENTED OUT ! SHOULD COMPUTE THE SUM OF ALL THE DIFF RANDS
 def randdiff(bot,trigger):
-    global tempsum
-    if bot.nick == LEADERNICK:
-        if tempsum == 0:
-            tempsum = int(tempRand)
-        tempsum = tempsum + int(trigger.group(2))
-        bot.say(str(tempsum))
+    global tempsum, tempRand, leftRand
+    if bot.nick == LEADERNICK and leftRand:
+        bot.say("calculating diff")
 
+        if tempsum == None:
+            tempsum = int(tempRand) - int(leftRand)
+            tempsum = tempsum + int(trigger.group(2))
+            bot.say("its none" + str(tempsum))
+        elif tempsum:
+            tempsum = tempsum + int(trigger.group(2))
+            bot.say("not none "+ str(tempsum))
+
+        if tempsum == 0:
+            bot.say("Let's dine")
 
 
 
