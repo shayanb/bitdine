@@ -1,3 +1,6 @@
+# forked from https://gist.github.com/dims/5000f40c539b6eac914f
+# modifed for bitdine use by Shayan Eskandari
+
 import ecdsa
 import ecdsa.der
 import ecdsa.util
@@ -54,10 +57,19 @@ def pubKeyToAddr(s):
 def keyToAddr(s):
     return pubKeyToAddr(privateKeyToPublicKey(s))
 
+def returnaddresses():
+    t = os.urandom(32).encode('hex')
+    return keyToAddr(t),privateKeyToWif(t)
+
+
 # Generate a random private key
 private_key = os.urandom(32).encode('hex')
 
-# You can verify the values on http://brainwallet.org/
-print "Secret Exponent (Uncompressed) : %s " % private_key 
-print "Private Key     : %s " % privateKeyToWif(private_key)
-print "Address         : %s " % keyToAddr(private_key)
+
+if __name__ == "__main__" :
+
+    # You can verify the values on http://brainwallet.org/
+    print "Secret Exponent (Uncompressed) : %s " % private_key
+    print "Private Key     : %s " % privateKeyToWif(private_key)
+    print "Address         : %s " % keyToAddr(private_key)
+

@@ -36,7 +36,8 @@ MESSAGE TYPES:
 
     21  :   first round of dining, M = None, just checks if the sum of all the diffs is 0
 
-    31  :
+    31  :   leader announces that the circle messaging (DCnet) works fine
+    32  :   left neighbour of the leader initiates leader's output ordering procedure
 
 
 
@@ -74,12 +75,29 @@ except ImportError:
     import xml.etree.ElementTree as ET
 
 
+#generate bitcoin addresses
+import keyUtils
 
 
 ######################################
 #           Global Variables         #
 ######################################
+#Hardcoded leader nickname
+LEADERNICK = "LeaderBot"
+
+
+nisturl = "https://beacon.nist.gov/rest/record/last"
+
+
+#rsa keys for encryption/decryption
 privkey, pubkey = None,None
+
+#bitcoin output addresses
+btcAddress, btcPrivKey = None, None
+#integer value of bitcoin public address
+int_btc = None
+
+#runtime global variables
 leader = None
 leftNeighbour = None
 rightNeighbour = None
@@ -93,21 +111,18 @@ joingroup = {}
 #ordergroup is the ordered group of members after the shuffle by the leader
 orderGroup = {}
 numberOfGroup = 0
-#Hardcoded leader nickname
-LEADERNICK = "LeaderBot"
 
 
-nisturl = "https://beacon.nist.gov/rest/record/last"
-
+#output ordering range
+lrange = 0
+rrange = 2 ** 256
 
 
 #temporary Global Variables
 tempsum = None
 
 
-######################################
-#           Global Flags (reset)     #
-######################################
+#last call to join the circle flag, NOT YET USED
 lastcall = None
 
 
@@ -302,9 +317,80 @@ def decrypt_RSA(private_key, package):
 def rnd_gen():
     '''
     generates a random number between 0 and (2 ^ 64) - 1
+    for DCnet communication
     '''
     rnd = random.randint(0,(2**64)-1)
     return rnd
+
+
+
+#=========================
+#    Bitcoin Functions   #
+#=========================
+
+def set_bitcoin_address():
+    '''
+    #IMP Generates new set of key on every run
+    returns bitcoin public key and private key
+    sets the global variables btcAddress & btcPrivKey
+    :return:
+    Bitcoin public key, private key = set_bitcoin_address()
+    '''
+    global btcAddress,btcPrivKey
+    addresses = keyUtils.returnaddresses()
+    btcAddress = addresses[0]
+    btcPrivKey = addresses[1]
+    print btcAddress #log
+    print btcPrivKey #4debug TO BE REMOVED LATER
+    return btcAddress, btcPrivKey
+
+
+
+def base58_to_int(btcaddress):
+    '''
+    Converts Bitcoin address (public key) to int (Long)
+    :param btcaddress:
+    :return:
+    '''
+    import base58, binascii
+
+    decoded_string = base58.b58decode(btcaddress)
+    hex_string = binascii.hexlify(bytearray(decoded_string))
+    int_string = int(hex_string, 16)
+    print int_string # log
+    return int_string
+
+
+
+def int_to_base58(int_string):
+    '''
+    Converts (long) int to bitcoin address (public key)
+    :param int_string:
+    :return:
+    '''
+    import base58
+    hex_string = hex(int_string).rstrip("L").replace("x", "0")
+    unencoded_string = str(bytearray.fromhex(hex_string))
+    encoded_string= base58.b58encode(unencoded_string)
+    print(encoded_string)
+    return encoded_string
+
+
+
+#=============================
+#  split range and Ordering  #
+#=============================
+
+
+def split_range(lrange,rrange):
+    return lrange, rrange/2
+
+
+def check_in_range(selfint, lrange, rrange):
+    if lrange < selfint < rrange:
+        return 1
+    else:
+        return 0
 
 
 
@@ -329,12 +415,16 @@ def joinshout(bot, trigger):
       e.g      .timestamp #nick=Willie2#timestamp=1400639033
     saves the local bots nick and public in joingroup
     '''
-    global  privkey, pubkey, joingroup
+    global  privkey, pubkey, joingroup, int_btc
     if not privkey:
         privkey, pubkey = generate_RSA()
         joingroup[bot.nick] = pubkey
     bot.say(".pubkey #nick=" + bot.nick + "#pubkey=" + pubkey)
     #bot.say(".timestamp #nick=" + bot.nick + "#timestamp="+ str(int(time())))
+    if not btcAddress:
+        set_bitcoin_address()
+        int_btc = base58_to_int(btcAddress)
+        print "bitcoin addresses generated" #log
 
 
 
@@ -345,10 +435,9 @@ def pm(bot,trigger):
     Read other public keys and stores them in joingroup() dict [nick,pubkey]
     """
     global joingroup
-    #bot.say(trigger.group(2))
     nick, pubkey = parse_pubkey_respond(trigger.group(2)) #anything after .pubkey wil be in passed to parse_pub_key
     if pubkey and not (nick in joingroup): #checks to have a valid public key and also if the nickname already exists in the list of joingroup
-        joingroup[nick] = [pubkey]
+        joingroup[nick] = fix_pubkey([pubkey])
         bot.say("%s received" %nick) #4DEBUG
 
 
@@ -443,7 +532,7 @@ def readcommand(bot,trigger):
         # 11 - initiate the round sequence by leader
         if msgType == "11" and fromNick == LEADERNICK and toNick == bot.nick:
                 tempRand = rnd_gen()
-                leftneighbour_pubkey = fix_pubkey(joingroup[leftNeighbour])
+                leftneighbour_pubkey = joingroup[leftNeighbour]
                 tempMsg = encrypt_RSA(leftneighbour_pubkey, tempRand)
                 query = ".commandme 12,"+bot.nick+","+leftNeighbour+","+tempMsg+",EOM"
                 bot.say(query)
@@ -454,7 +543,7 @@ def readcommand(bot,trigger):
             if bot.nick == toNick and fromNick == rightNeighbour:
                 if not tempRand:
                     tempRand = rnd_gen()
-                    leftneighbour_pubkey = fix_pubkey(joingroup[leftNeighbour])
+                    leftneighbour_pubkey = joingroup[leftNeighbour]
                     tempMsg = encrypt_RSA(leftneighbour_pubkey, tempRand)
                     query = ".commandme 12,"+bot.nick+","+leftNeighbour+","+tempMsg+",EOM"
                     bot.say(query)
@@ -462,23 +551,37 @@ def readcommand(bot,trigger):
                 print leftRand #4debug
                 temp_sum = tempRand - int(leftRand)
                # bot.say(".randdiff "+ str(temp_sum))
-                time.sleep(tempRand % 5) #random sleep to prevent overlap of function runs (huh?)
+               # time.sleep(tempRand % 5) #random sleep to prevent overlap of function runs (huh?)
                 bot.say(".commandme 21,"+bot.nick+","+LEADERNICK+","+str(temp_sum)+",EOM")
 
         # 21 - first round of dining, M = None, just checks if the sum of all the diffs is 0
         if msgType == "21" and toNick == LEADERNICK and bot.nick == LEADERNICK:
             global tempsum
-            if tempsum == None and (leftRand):
+            time.sleep(5) #sleep till leader gets leftRand #dirtysolution
+            if tempsum == None:
                 tempsum = tempRand - int(leftRand)
                 tempsum += int(msg)
             elif not (tempsum == 0):
                 tempsum += int(msg)
             if tempsum == 0:
-                bot.say("let's dine") #the sum has been 0 so the messaging is alright, let's dine
-                #initiate the order of messaging!
+                bot.say(".commandme 31,"+bot.nick+","+leftNeighbour+","+"let's Dine"+",EOM") #trick to initiate the leader's output ordering
+
+        # because each bot would not listen to their own commands here is a trick to start range dividing by leader
+        if msgType == "31" and toNick == bot.nick and fromNick == LEADERNICK:
+            bot.say(".commandme 32,"+bot.nick+","+ LEADERNICK +","+"You go first"+",EOM")
 
 
+        if msgType == "32" and toNick == LEADERNICK and bot.nick == LEADERNICK:
+            #start the output ordering range
+            bot.say("Raise your hand if you have a public key in these ranges")
+            inner_lrange, inner_rrange = split_range(lrange, rrange)
+            print "who has pubkey between" + str(inner_lrange) + " and " + str(inner_rrange)
+            bot.say(".commandme 33,"+bot.nick+","+"ALL"+","+str(inner_lrange)+","+str(inner_rrange)+",EOM")
 
+        if msgType == "33" and fromNick == LEADERNICK:
+            temp_lrange, temp_rrange = msg.split(',')
+            if check_in_range(int_btc, int(temp_lrange), int(temp_rrange)):
+                bot.say("ME")
 
 
 
@@ -488,6 +591,10 @@ def readcommand(bot,trigger):
         #if the message could not be interpreted
         bot.say(".error 01, Failed to read the command message") #4debug - ERROR handling
         print ("ERROR 01, Failed to read the command message") #LOG
+
+
+
+
 
 
 
