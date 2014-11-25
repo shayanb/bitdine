@@ -11,6 +11,10 @@ ORDER of manual commands:
 
 .leader
 
+
+dnc = divide and conquer
+
+Note: Leader should be initiated first, or there would be random incorrect Decryption errors from some of the bots
 """
 
 
@@ -28,6 +32,7 @@ ORDER of manual commands:
 
 - replace sleep(5) to call the cycle
 - flag to know if the cycle is close or not
+- check flags to know if a event has been executed or not
 
 
 MESSAGE TYPES:
@@ -39,6 +44,8 @@ MESSAGE TYPES:
     31  :   leader announces that the circle messaging (DCnet) works fine
     32  :   left neighbour of the leader initiates leader's output ordering procedure
 
+    34  :   divide and conquer LEADER sends query
+    35  :   LEADER reads the responses
 
 
 [error handling]
@@ -54,6 +61,12 @@ TO DO ON THE SECOND ROUND OF DEVELOPMENT:
     - closes the circle and no one can call .join event (if lastcall)
     -
 
+
+
+
+
+
+FACT: All version 1 bitcoin addresses in binary format starts with minimum of 8 zeros!
 
 """
 
@@ -94,8 +107,9 @@ privkey, pubkey = None,None
 
 #bitcoin output addresses
 btcAddress, btcPrivKey = None, None
-#integer value of bitcoin public address
+#int and binary value of bitcoin public address
 int_btc = None
+bin_btc = None
 
 #runtime global variables
 leader = None
@@ -115,7 +129,8 @@ numberOfGroup = 0
 
 #output ordering range
 lrange = 0
-rrange = 2 ** 256
+rrange = 2 ** 194 # 2 ** 256 is too big for the range, the highest bitcoin address (not assuming the checksums) would be 1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz that the integer value would be less than 2 ** 194
+
 
 
 #temporary Global Variables
@@ -324,9 +339,9 @@ def rnd_gen():
 
 
 
-#=========================
-#    Bitcoin Functions   #
-#=========================
+#=================================
+#    Bitcoin Address Functions   #
+#=================================
 
 def set_bitcoin_address():
     '''
@@ -376,6 +391,45 @@ def int_to_base58(int_string):
     return encoded_string
 
 
+def hextobin(hexval):
+        '''
+        Takes a string representation of hex data with
+        arbitrary length and converts to string representation
+        of binary.  Includes padding 0s
+        '''
+        thelen = len(hexval)*4
+        binval = bin(int(hexval, 16))[2:]
+        while ((len(binval)) < thelen):
+            binval = '0' + binval
+        return binval
+
+
+def base58_to_binary(btcaddress):
+    '''
+    Converts Bitcoin address (public key) to binary
+    :param btcaddress:
+    :return:
+    '''
+    import base58, binascii
+    decoded_string = base58.b58decode(btcaddress)
+    hex_string = binascii.hexlify(bytearray(decoded_string))
+    binary_string = hextobin(hex_string)
+    return binary_string
+
+
+
+def binary_to_base58(binary_string):
+    '''
+    Converts (long) binary to bitcoin address (public key)
+    :param binary_string:
+    :return:
+    '''
+    import base58
+    hex_string = hex(int(binary_string, 2)).rstrip("L").replace("x", "0")
+    unencoded_string = str(bytearray.fromhex(hex_string))
+    encoded_string= base58.b58encode(unencoded_string)
+    return encoded_string
+
 
 #=============================
 #  split range and Ordering  #
@@ -424,6 +478,7 @@ def joinshout(bot, trigger):
     if not btcAddress:
         set_bitcoin_address()
         int_btc = base58_to_int(btcAddress)
+        bin_btc = base58_to_binary(btcAddress)
         print "bitcoin addresses generated" #log
 
 
@@ -512,6 +567,62 @@ def readorder(bot,trigger):
     bot.say("left neighbour is : " + leftNeighbour) #4debug
 
 
+
+
+
+#=========================
+#    Divide and conquer  #
+#           dnc          #
+#=========================
+
+
+def dnc_prefix_send(bot, prefix):
+    '''
+    LEADER broadcast the prefix of the output address to the channel
+    '''
+    bot.say(".commandme 34,"+LEADERNICK+","+"ALL"+","+str(prefix)+",EOM")
+
+
+
+def dnc_prefix_respond(bot,prefix):
+    '''
+    EVERYONE read the prefix from dns_prefix_send (LEADER) and checks their value and respond 0 or 1
+
+    ::returns:
+    0 if the prefix does not match his address
+    1 if the prefix matches
+    '''
+    if bin_btc.startswith(prefix):
+        return 1
+    else:
+        return 0
+
+
+#def dnc_read_responces(bot, responces):
+
+
+
+def send_dcnet_encrypted(pubkey,msg=0,init=None):
+    '''
+    init = True is only for the first round
+        in this case message should be the newly generated random number
+        and returns the encrypted message and the random number , #hacky solution
+    :param pubkey:
+    :param msg:
+    :param init:
+    :return:
+    '''
+    if init is None:
+        tempRand = msg
+    else:
+        tempRand = rnd_gen()
+        msg += tempRand
+    enc_message = encrypt_RSA(pubkey,msg)
+    if init is None:
+        return enc_message, tempRand
+    else:
+        return enc_message
+
 #=========================
 #    Main Command Module #
 #=========================
@@ -531,21 +642,20 @@ def readcommand(bot,trigger):
 
         # 11 - initiate the round sequence by leader
         if msgType == "11" and fromNick == LEADERNICK and toNick == bot.nick:
-                tempRand = rnd_gen()
                 leftneighbour_pubkey = joingroup[leftNeighbour]
-                tempMsg = encrypt_RSA(leftneighbour_pubkey, tempRand)
-                query = ".commandme 12,"+bot.nick+","+leftNeighbour+","+tempMsg+",EOM"
+                initmsg = send_dcnet_encrypted(leftneighbour_pubkey)
+                query = ".commandme 12,"+bot.nick+","+leftNeighbour+","+initmsg+",EOM"
                 bot.say(query)
-                print tempRand #4debug
+                #print tempRand #4debug
 
         # 12 - get the encrypted random number from the rightneighbour (leader) and decrypt | also send the encrypted number to the leftneighbour and so on
         if msgType == "12":
             if bot.nick == toNick and fromNick == rightNeighbour:
                 if not tempRand:
-                    tempRand = rnd_gen()
                     leftneighbour_pubkey = joingroup[leftNeighbour]
-                    tempMsg = encrypt_RSA(leftneighbour_pubkey, tempRand)
-                    query = ".commandme 12,"+bot.nick+","+leftNeighbour+","+tempMsg+",EOM"
+                    tempRand = rnd_gen()
+                    initmsg, tempRand = send_dcnet_encrypted(leftneighbour_pubkey, tempRand, 1)
+                    query = ".commandme 12,"+bot.nick+","+leftNeighbour+","+initmsg+",EOM"
                     bot.say(query)
                 leftRand = decrypt_RSA(privkey, msg)
                 print leftRand #4debug
@@ -574,13 +684,21 @@ def readcommand(bot,trigger):
         if msgType == "32" and toNick == LEADERNICK and bot.nick == LEADERNICK:
             #start the output ordering range
             bot.say("Raise your hand if you have a public key in these ranges")
-            inner_lrange, inner_rrange = split_range(lrange, rrange)
+            inner_lrange, inner_rrange = split_range(lrange, rrange) #splits the range
             print "who has pubkey between" + str(inner_lrange) + " and " + str(inner_rrange)
             bot.say(".commandme 33,"+bot.nick+","+"ALL"+","+str(inner_lrange)+","+str(inner_rrange)+",EOM")
 
+
+       #TODO: REMOVE 33 FROM HERE! -> divide and conquer function uses 34 msg type
+
+
         if msgType == "33" and fromNick == LEADERNICK:
+            # main message type to check if anyone is in range temp_lrange, temp_rrange
             temp_lrange, temp_rrange = msg.split(',')
-            if check_in_range(int_btc, int(temp_lrange), int(temp_rrange)):
+            print btcAddress #4debug
+            print int_btc #4debug remove later
+
+            if check_in_range(int_btc, int(temp_lrange), int(temp_rrange)/4):
                 bot.say("ME")
 
 
@@ -589,9 +707,8 @@ def readcommand(bot,trigger):
 
     else:
         #if the message could not be interpreted
-        bot.say(".error 01, Failed to read the command message") #4debug - ERROR handling
-        print ("ERROR 01, Failed to read the command message") #LOG
-
+        bot.say(".error 01, Failed to read the command message" + trigger.group(2)) #4debug - ERROR handling
+        print ("ERROR 01, Failed to read the command message" + trigger.group(2)) #LOG
 
 
 
