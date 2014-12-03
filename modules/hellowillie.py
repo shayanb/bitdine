@@ -42,9 +42,10 @@ MESSAGE TYPES:
     21  :   first round of dining, M = None, just checks if the sum of all the diffs is 0
 
     31  :   leader announces that the circle messaging (DCnet) works fine
-    32  :   left neighbour of the leader initiates leader's output ordering procedure
+    32  :   left neighbour of the leader initiates leader's output ordering procedure and starts the dnc
 
-    34  :   divide and conquer LEADER sends query
+    33  :   LEADER broadcasts the starting prefix and initiate the dnc in DC-Net
+    34  :   all the bots start their replies
     35  :   LEADER reads the responses
 
 
@@ -88,6 +89,10 @@ except ImportError:
     import xml.etree.ElementTree as ET
 
 
+#locking threads
+import threading
+lock = threading.RLock()
+
 #generate bitcoin addresses
 import keyUtils
 
@@ -101,6 +106,8 @@ LEADERNICK = "LeaderBot"
 
 nisturl = "https://beacon.nist.gov/rest/record/last"
 
+#starting prefix for Version 1 Bitcoin addresses (change this for version 3 or other cryptocurrencies)
+startingPrefix = "00000000"
 
 #rsa keys for encryption/decryption
 privkey, pubkey = None,None
@@ -109,7 +116,7 @@ privkey, pubkey = None,None
 btcAddress, btcPrivKey = None, None
 #int and binary value of bitcoin public address
 int_btc = None
-bin_btc = None
+bin_btc = ""
 
 #runtime global variables
 leader = None
@@ -200,6 +207,32 @@ def str2list(str2):
     return lststr
 
 
+
+
+
+def fix_pubkey(pubkey):
+    '''
+    fixes the public key format (PEM) retrieved from the IRC chat string
+    (RSA)
+    '''
+    pubkey = str(pubkey).replace("'", "").strip("[]")
+    firstline = pubkey[:26]
+    pem = pubkey.replace(pubkey[-24:], '').replace(pubkey[:26], '')
+    lastline = pubkey[-24:]
+    final = firstline + "\n" + pem + "\n" + lastline
+    #print "fixed pubkey = " + final #debug
+    return str(final)
+
+
+
+######################################
+#           Main Functions           #
+######################################
+
+#=========================
+#    Command Parser     #
+#=========================
+
 def commandsplit(rawcommand, botnick):
     '''
     reads the rawcommand (trigger.group[2]) and splits the command
@@ -225,26 +258,6 @@ def commandsplit(rawcommand, botnick):
         print "Wrong command format" #LOG
     return None
 
-
-
-def fix_pubkey(pubkey):
-    '''
-    fixes the public key format (PEM) retrieved from the IRC chat string
-    (RSA)
-    '''
-    pubkey = str(pubkey).replace("'", "").strip("[]")
-    firstline = pubkey[:26]
-    pem = pubkey.replace(pubkey[-24:], '').replace(pubkey[:26], '')
-    lastline = pubkey[-24:]
-    final = firstline + "\n" + pem + "\n" + lastline
-    print "fixed pubkey = " + final #debug
-    return str(final)
-
-
-
-######################################
-#           Main Functions           #
-######################################
 
 #=========================
 #  Shuffle and Ordering  #
@@ -334,7 +347,8 @@ def rnd_gen():
     generates a random number between 0 and (2 ^ 64) - 1
     for DCnet communication
     '''
-    rnd = random.randint(0,(2**64)-1)
+#    rnd = random.randint(0,(2**64)-1)
+    rnd = random.randint(0,(2**192)-1)
     return rnd
 
 
@@ -469,7 +483,7 @@ def joinshout(bot, trigger):
       e.g      .timestamp #nick=Willie2#timestamp=1400639033
     saves the local bots nick and public in joingroup
     '''
-    global  privkey, pubkey, joingroup, int_btc
+    global  privkey, pubkey, joingroup, int_btc, bin_btc
     if not privkey:
         privkey, pubkey = generate_RSA()
         joingroup[bot.nick] = pubkey
@@ -479,7 +493,7 @@ def joinshout(bot, trigger):
         set_bitcoin_address()
         int_btc = base58_to_int(btcAddress)
         bin_btc = base58_to_binary(btcAddress)
-        print "bitcoin addresses generated" #log
+        print "I'm " + bot.nick
 
 
 
@@ -569,6 +583,32 @@ def readorder(bot,trigger):
 
 
 
+#=========================
+#    DC-net messaging    #
+#=========================
+
+def msg_dcnet_encrypted(pubkey,msg=0,newrand=False):
+    '''
+    newrand = True if you want the function to generate the random number and add it to the message
+        in this case message should be the newly generated random number
+        and returns the encrypted message and the random number , #hacky solution
+
+    if newrand=True, it sets the global tempRand to the new generated random number
+
+    :return:
+    '''
+    global tempRand
+    if newrand:
+        print "NEW RANDOM GENERATED! ::msg_dcnet_encrypted" #4debug and log
+        tempRand = rnd_gen()
+        msg += tempRand
+    enc_message = encrypt_RSA(pubkey,msg)
+    if newrand:
+        return enc_message, tempRand
+    else:
+        return enc_message
+
+
 
 #=========================
 #    Divide and conquer  #
@@ -578,13 +618,17 @@ def readorder(bot,trigger):
 
 def dnc_prefix_send(bot, prefix):
     '''
-    LEADER broadcast the prefix of the output address to the channel
+    LEADER broadcast the prefix of the output address to the channel with msgtype 33
+    msg = prefix
     '''
-    bot.say(".commandme 34,"+LEADERNICK+","+"ALL"+","+str(prefix)+",EOM")
+    if bot.nick == LEADERNICK:
+        bot.say(".commandme 33,"+LEADERNICK+","+"ALL"+","+str(prefix)+",EOM")
+    else:
+        print "Who do you think you are? not the leader (dnc_prefix_send)" #log
 
 
 
-def dnc_prefix_respond(bot,prefix):
+def dnc_prefix_respond(prefix):
     '''
     EVERYONE read the prefix from dns_prefix_send (LEADER) and checks their value and respond 0 or 1
 
@@ -592,7 +636,7 @@ def dnc_prefix_respond(bot,prefix):
     0 if the prefix does not match his address
     1 if the prefix matches
     '''
-    if bin_btc.startswith(prefix):
+    if str(bin_btc).startswith(prefix):
         return 1
     else:
         return 0
@@ -602,26 +646,192 @@ def dnc_prefix_respond(bot,prefix):
 
 
 
-def send_dcnet_encrypted(pubkey,msg=0,init=None):
+
+
+def dnc_prepare_sendmsg(bot,leftNeighbourNick,rand_num, prefix=None, btcAdd=None):
     '''
-    init = True is only for the first round
-        in this case message should be the newly generated random number
-        and returns the encrypted message and the random number , #hacky solution
-    :param pubkey:
-    :param msg:
-    :param init:
+    Checks if the bot address starts with the prefix and then populate the message to be sent to left neighbour
+
+    rand_num is the newly generated random number for each round
+
+    if non is used it would use the rand_num for the output message (encrypted)
+    prefix should be equal to the round prefix that results in 0 or 1 being added to the rand_num before encryption
+    btcAdd should be anything other than None in order to have the btcaddress in integer format added to the rand_num before the encryption
+
+    #Not really a nice function though!
+
+    returns: all the message except the message code and the EOM
+
+    :param bot:
+    :param leftNeighbour:
+    :param rand_num:
+    :param prefix:
+    '''
+    print "dnc_prepare_sendmsg ::dnc_prepare_sendmsg" #4debug
+    print "temprand: " + str(rand_num)
+
+    temp_msg=0
+    leftneighbour_pubkey = joingroup[leftNeighbourNick]
+
+    if not prefix and not btcAdd:
+        print "Not prefix and not btcadd ::dnc_prepare_sendmsg" #4debug
+        temp_msg = rand_num
+
+    elif prefix and not btcAdd:
+        print "prefix and not btcadd ::dnc_prepare_sendmsg" #4debug
+
+        #adds 0 or 1 to the random number
+        temp_msg = rand_num + dnc_prefix_respond(prefix)
+
+    #if btcAdd and not prefix:
+     #   temp_msg = int_btc + rand_num
+
+    elif btcAdd and prefix:
+        print "prefix and btcadd:: dnc_prepare_sendmsg" #4debug
+
+        print str(bin_btc) #4debug
+        if dnc_prefix_respond(prefix) == 1:
+            temp_msg = int_btc + rand_num
+            print " It wasn't me : sending the btc address" #log
+        else:
+            temp_msg = rand_num
+            print "Really not me..." #4debug
+
+    #print "temp_msg= " + str(temp_msg)
+    msg = msg_dcnet_encrypted(leftneighbour_pubkey, temp_msg)
+    final_msg = bot.nick + ',' + leftNeighbourNick + ',' + msg
+    return final_msg
+
+
+
+
+def dnc_received_msg(bot, in_msg, rand_num):
+    '''
+    decrypts the received message and computes the difference between its own random and the message
+    and then populate the message to be sent to the leader
+
+    also returns the leftneighbour random number
+    :param bot:
+    :param in_msg:
+    :param rand_num:
     :return:
     '''
-    if init is None:
-        tempRand = msg
-    else:
-        tempRand = rnd_gen()
-        msg += tempRand
-    enc_message = encrypt_RSA(pubkey,msg)
-    if init is None:
-        return enc_message, tempRand
-    else:
-        return enc_message
+    #print "dnc_received_msg: temprand: " + str(rand_num)
+    decrypted_msg = decrypt_RSA(privkey, in_msg)
+    temp_msg = rand_num - int(decrypted_msg)
+    #print "decrypted left rand= " + decrypted_msg
+    final_msg = bot.nick + "," + LEADERNICK + ',' + str(temp_msg)
+    return final_msg, decrypted_msg
+
+
+
+
+def leader_sum_msgs():
+    pass
+
+
+
+
+def get_outAddress(bot,prefix):
+    '''
+    LEADER broadcasts that the last person who had the prefix, sends his output bitcoin address
+    returns the msg to be send without the message type and EOM
+    :param bot:
+    :param prefix:
+    :return:
+    '''
+    msg = bot.nick + ',' + 'ALL' + ',' + prefix
+    return msg
+
+
+
+def dnc_complete(bot, msgType, fromNick, toNick, msg,prefix):
+
+    global tempRand, leftRand, tempsum
+
+    with lock:
+        # 32 - Starts the dnc, leader broadcasts the prefix with msgtype 33
+        if msgType == '32' and bot.nick == LEADERNICK:
+            print "msgtype 32 LEADER for prefix: " + prefix
+            prefix = prefix
+
+            #sends the msgtype 33 for all the bots (except self)
+            dnc_prefix_send(bot, prefix)
+            time.sleep(1)
+            #leader is not listening to himself on the broadcast message!! #HackyCode
+            tempRand = rnd_gen()
+            #print "temprand= " + str(tempRand)
+            send_msg = dnc_prepare_sendmsg(bot,leftNeighbour,tempRand, prefix)
+            bot.say(".commandme 34," + send_msg + ',EOM')
+
+            #flush the tempsup, preparing for calculation
+            tempsum = None
+
+        # 33 - all the bots start reading the prefix and send their 0 or 1 to their left Neighbour
+        if msgType == '33' and toNick == "ALL" and fromNick == LEADERNICK:
+            print "msgtype=33" #4debug
+            tempRand = rnd_gen()
+            #print "33 temprand= " + str(tempRand)
+
+            send_msg = dnc_prepare_sendmsg(bot,leftNeighbour,tempRand, msg)
+            #dnc_prepare_sendmsg(bot,leftNeighbourNick,rand_num, prefix=None, btcAdd=None)
+            bot.say(".commandme 34," + send_msg + ',EOM')
+
+        # 34 - every bot including the leader starts to get their msg from their right neighbour and broadcast the difference
+        if msgType == "34" and toNick == bot.nick and fromNick == rightNeighbour:
+            print "msgtype=34" #4debug
+            #print "34 temprand= " + str(tempRand)
+
+            decrypted_msg = dnc_received_msg(bot, msg, tempRand)
+            broadcast_msg = decrypted_msg[0]
+            leftRand = decrypted_msg[1]
+            bot.say(".commandme 35,"+ broadcast_msg + ',EOM')
+            #print broadcast_msg
+
+
+
+        #35 leader reads all the differences and checks the message (0, 1 or >1)
+        if msgType == "35" and toNick == LEADERNICK and bot.nick == LEADERNICK:
+            print "msgtype=35" #4debug
+            #print "35 temprand= " + str(tempRand)
+
+            time.sleep(1) #sleep till leader gets leftRand #dirtysolution
+            if tempsum == None:
+                tempsum = tempRand - int(leftRand)
+                tempsum += int(msg)
+            elif tempsum:
+                tempsum += int(msg)
+            if 0 <= abs(tempsum) < numberOfGroup+1:
+                if abs(tempsum) == 0:
+                    print "sum = 0 on prefix: " + prefix
+                elif abs(tempsum) == 1:
+                    print "ask for the address on prefix: " + prefix #4debug
+                    print "################################################"
+                elif abs(tempsum) > 1:
+                    print "tempsum >1 : " + str(tempsum) + "on prefix: " + prefix
+                    dnc_complete(bot, "32", leftNeighbour, LEADERNICK, msg, prefix+"0")
+                    time.sleep(5)
+                    dnc_complete(bot, "32", leftNeighbour, LEADERNICK, msg, prefix+"1")
+
+                print "number of matches =" + str(tempsum) #log
+                #bot.say("The number of matches is: " + str(abs(tempsum)))
+            #TODO: Should add all the modes <-- HERE IS WHERE THE MAGIC SHOULD HAPPEN!
+            #bot.say ("testing message value"+msg)
+            print "tempsum= " + str(tempsum)
+
+
+
+
+
+
+
+
+    #print "Prefix: " + prefix
+
+
+
+
+
 
 #=========================
 #    Main Command Module #
@@ -643,10 +853,9 @@ def readcommand(bot,trigger):
         # 11 - initiate the round sequence by leader
         if msgType == "11" and fromNick == LEADERNICK and toNick == bot.nick:
                 leftneighbour_pubkey = joingroup[leftNeighbour]
-                initmsg = send_dcnet_encrypted(leftneighbour_pubkey)
+                initmsg, tempRand = msg_dcnet_encrypted(leftneighbour_pubkey, 0, newrand=True)
                 query = ".commandme 12,"+bot.nick+","+leftNeighbour+","+initmsg+",EOM"
                 bot.say(query)
-                #print tempRand #4debug
 
         # 12 - get the encrypted random number from the rightneighbour (leader) and decrypt | also send the encrypted number to the leftneighbour and so on
         if msgType == "12":
@@ -654,13 +863,13 @@ def readcommand(bot,trigger):
                 if not tempRand:
                     leftneighbour_pubkey = joingroup[leftNeighbour]
                     tempRand = rnd_gen()
-                    initmsg, tempRand = send_dcnet_encrypted(leftneighbour_pubkey, tempRand, 1)
+                    print ".12 temprand = " + str(tempRand) #4debug
+                    initmsg = msg_dcnet_encrypted(leftneighbour_pubkey, tempRand)
                     query = ".commandme 12,"+bot.nick+","+leftNeighbour+","+initmsg+",EOM"
                     bot.say(query)
                 leftRand = decrypt_RSA(privkey, msg)
                 print leftRand #4debug
                 temp_sum = tempRand - int(leftRand)
-               # bot.say(".randdiff "+ str(temp_sum))
                # time.sleep(tempRand % 5) #random sleep to prevent overlap of function runs (huh?)
                 bot.say(".commandme 21,"+bot.nick+","+LEADERNICK+","+str(temp_sum)+",EOM")
 
@@ -674,32 +883,45 @@ def readcommand(bot,trigger):
             elif not (tempsum == 0):
                 tempsum += int(msg)
             if tempsum == 0:
+                print "Message = 0" #log
                 bot.say(".commandme 31,"+bot.nick+","+leftNeighbour+","+"let's Dine"+",EOM") #trick to initiate the leader's output ordering
+            #bot.say("4debug tempsum= "+ str(tempsum) +" tempRand=" + str(tempRand))
+
 
         # because each bot would not listen to their own commands here is a trick to start range dividing by leader
         if msgType == "31" and toNick == bot.nick and fromNick == LEADERNICK:
             bot.say(".commandme 32,"+bot.nick+","+ LEADERNICK +","+"You go first"+",EOM")
 
 
-        if msgType == "32" and toNick == LEADERNICK and bot.nick == LEADERNICK:
-            #start the output ordering range
-            bot.say("Raise your hand if you have a public key in these ranges")
-            inner_lrange, inner_rrange = split_range(lrange, rrange) #splits the range
-            print "who has pubkey between" + str(inner_lrange) + " and " + str(inner_rrange)
-            bot.say(".commandme 33,"+bot.nick+","+"ALL"+","+str(inner_lrange)+","+str(inner_rrange)+",EOM")
+       #TODO: REMOVE 32 FROM HERE! -> divide and conquer function uses 34 msg type
 
 
-       #TODO: REMOVE 33 FROM HERE! -> divide and conquer function uses 34 msg type
+        if int(msgType) in xrange(32,40):
+            dnc_complete(bot, msgType, fromNick, toNick, msg, "00000000")
 
-
-        if msgType == "33" and fromNick == LEADERNICK:
-            # main message type to check if anyone is in range temp_lrange, temp_rrange
-            temp_lrange, temp_rrange = msg.split(',')
-            print btcAddress #4debug
-            print int_btc #4debug remove later
-
-            if check_in_range(int_btc, int(temp_lrange), int(temp_rrange)/4):
-                bot.say("ME")
+       #          == "32" and toNick == LEADERNICK and bot.nick == LEADERNICK:
+       #      #start the output ordering range
+       #      bot.say("Let's Dine and.... Dash")
+       #
+       #
+       #
+       #
+       #      inner_lrange, inner_rrange = split_range(lrange, rrange) #splits the range
+       #      print "who has pubkey between" + str(inner_lrange) + " and " + str(inner_rrange)
+       #      bot.say(".commandme 33,"+bot.nick+","+"ALL"+","+str(inner_lrange)+","+str(inner_rrange)+",EOM")
+       #
+       #
+       # #TODO: REMOVE 33 FROM HERE! -> divide and conquer function uses 34 msg type
+       #
+       #
+       #  if msgType == "33" and fromNick == LEADERNICK:
+       #      # main message type to check if anyone is in range temp_lrange, temp_rrange
+       #      temp_lrange, temp_rrange = msg.split(',')
+       #      print btcAddress #4debug
+       #      print int_btc #4debug remove later
+       #
+       #      if check_in_range(int_btc, int(temp_lrange), int(temp_rrange)/4):
+       #          bot.say("ME")
 
 
 

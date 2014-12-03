@@ -91,8 +91,8 @@ def binary_to_base58(binary_string):
 
 
 
-def split_range(rrange,lrange):
-    return lrange, rrange/2
+#def split_range(rrange,lrange):
+#    return lrange, rrange/2
 
 
 
@@ -117,9 +117,7 @@ def order_binary(testgroup, n):
         return
 
 
-flag = True
-
-def btc_divideandconquer(prefix, btcAddress_tuple):
+def btc_divideandconquer(prefix, btcAddress_tuple, lock):
     """
     btcAddress_tuple --> [user] = [btcaddress]
     prefix starts with 000000001
@@ -128,37 +126,35 @@ def btc_divideandconquer(prefix, btcAddress_tuple):
     :param btcAddress_tuple:
     :return:
     """
-    global flag
     matched_item = None
     matched_keys = 0
-    #print "prefix:" + prefix
-    while flag:
-        flag = False
+    print "Prefix:" + prefix
+    with lock:
         for item in btcAddress_tuple:
             if item[1].startswith(prefix):
            # print "HERE " + item[0]
                 matched_item = item[0]
                 matched_keys+=1
-        print str(matched_keys)
+        print "# Matched Keys:"+str(matched_keys)
+        print ''
+
 
         if matched_keys == 0:
             print "None on Prefix " + prefix
-
-            flag = True
+            print ''
             return 0
-
 
         if matched_keys == 1:
             #get value in DC
-            print "####   1 match on prefix: "+ prefix + " = " + matched_item
-            flag = True
+            print "#                       1 match on prefix: "+ prefix + " = " + matched_item
+            print '#                       '+ str(base58_to_int(matched_item))
+            print base58_to_binary(matched_item)
             return matched_item
 
-
-
         if matched_keys > 1:
-            btc_divideandconquer(prefix+"0", btcAddress_tuple)
-            btc_divideandconquer(prefix+"1", btcAddress_tuple)
+            #print str(matched_keys) + "Now going to " + prefix+"0,1"
+            btc_divideandconquer(prefix+"0", btcAddress_tuple, lock)
+            btc_divideandconquer(prefix+"1", btcAddress_tuple, lock)
 
 
 
@@ -194,12 +190,14 @@ Testgroup_binary -> [BTCAddress] = [BTCAddress_Binary]
     #
     # vazeh = decrypt_RSA(private_key, makhfi)
     # print vazeh
+    flag = True
+    import time
 
     testgroup = {}
     testgroup_binary = {}
     test_joingroup = {}
 
-    for i in range(0,10):
+    for i in range(0,100):
         bit_address, bit_priv = set_bitcoin_address()
         testgroup[bit_address] = bit_priv
         testgroup_binary[bit_address] = base58_to_binary(bit_address)
@@ -222,10 +220,15 @@ Testgroup_binary -> [BTCAddress] = [BTCAddress_Binary]
     print "and here are the users: "
     for user in list_joingroup:
         print user[0] + " with this address " + user[1]
+        print base58_to_int(user[1])
   #  order_binary(binary_list, 0)
 
-
-    btc_divideandconquer("00000000", setkeys_binary)
+    import threading
+    lock = threading.RLock()
+    import thread
+    lock2 = thread.allocate_lock()
+    time.sleep(1)
+    btc_divideandconquer("00000000", setkeys_binary, lock)
 
   #  print base58_to_binary("1z")
 
