@@ -93,6 +93,7 @@ except ImportError:
 import threading
 lock = threading.RLock()
 
+
 #generate bitcoin addresses
 import keyUtils
 
@@ -142,7 +143,7 @@ rrange = 2 ** 194 # 2 ** 256 is too big for the range, the highest bitcoin addre
 
 #temporary Global Variables
 tempsum = None
-
+number_of_users_done = None
 
 #last call to join the circle flag, NOT YET USED
 lastcall = None
@@ -353,6 +354,18 @@ def rnd_gen():
 
 
 
+def check_btc_balance(btcaddress):
+    import requests
+    url = "https://blockchain.info/q/addressbalance/"
+    r = requests.get(url+btcaddress)
+    if int(r.text) > 0:
+        print "######~~~~~~~######## Balance is : " + r.text
+        return 1
+    else:
+        print "bal=" + r.text
+        return 0
+
+
 #=================================
 #    Bitcoin Address Functions   #
 #=================================
@@ -369,6 +382,7 @@ def set_bitcoin_address():
     addresses = keyUtils.returnaddresses()
     btcAddress = addresses[0]
     btcPrivKey = addresses[1]
+    check_btc_balance(btcAddress)
     print btcAddress #log
     print btcPrivKey #4debug TO BE REMOVED LATER
     return btcAddress, btcPrivKey
@@ -428,6 +442,7 @@ def base58_to_binary(btcaddress):
     decoded_string = base58.b58decode(btcaddress)
     hex_string = binascii.hexlify(bytearray(decoded_string))
     binary_string = hextobin(hex_string)
+    print binary_string
     return binary_string
 
 
@@ -616,15 +631,15 @@ def msg_dcnet_encrypted(pubkey,msg=0,newrand=False):
 #=========================
 
 
-def dnc_prefix_send(bot, prefix):
-    '''
-    LEADER broadcast the prefix of the output address to the channel with msgtype 33
-    msg = prefix
-    '''
-    if bot.nick == LEADERNICK:
-        bot.say(".commandme 33,"+LEADERNICK+","+"ALL"+","+str(prefix)+",EOM")
-    else:
-        print "Who do you think you are? not the leader (dnc_prefix_send)" #log
+# def dnc_prefix_send(bot, prefix):
+#     '''
+#     LEADER broadcast the prefix of the output address to the channel with msgtype 33
+#     msg = prefix
+#     '''
+#     if bot.nick == LEADERNICK:
+#         bot.say(".commandme 33,"+LEADERNICK+","+"ALL"+","+msgPrefixPacker(prefix,prefix)+",EOM")
+#     else:
+#         print "Who do you think you are? not the leader (dnc_prefix_send)" #log
 
 
 
@@ -661,11 +676,6 @@ def dnc_prepare_sendmsg(bot,leftNeighbourNick,rand_num, prefix=None, btcAdd=None
     #Not really a nice function though!
 
     returns: all the message except the message code and the EOM
-
-    :param bot:
-    :param leftNeighbour:
-    :param rand_num:
-    :param prefix:
     '''
     print "dnc_prepare_sendmsg ::dnc_prepare_sendmsg" #4debug
     print "temprand: " + str(rand_num)
@@ -725,13 +735,13 @@ def dnc_received_msg(bot, in_msg, rand_num):
 
 
 
-
+#NOT USED
 def leader_sum_msgs():
     pass
 
 
 
-
+#NOT USED
 def get_outAddress(bot,prefix):
     '''
     LEADER broadcasts that the last person who had the prefix, sends his output bitcoin address
@@ -744,80 +754,112 @@ def get_outAddress(bot,prefix):
     return msg
 
 
+#NOT USED
+def waituntil(somepredicate, timeout=10, period=0.25):
+    mustend = time.time() + timeout
+    while time.time() < mustend:
+        if somepredicate(): return True
+        time.sleep(period)
+    return False
 
-def dnc_complete(bot, msgType, fromNick, toNick, msg,prefix):
 
-    global tempRand, leftRand, tempsum
 
-    with lock:
-        # 32 - Starts the dnc, leader broadcasts the prefix with msgtype 33
-        if msgType == '32' and bot.nick == LEADERNICK:
-            print "msgtype 32 LEADER for prefix: " + prefix
-            prefix = prefix
 
-            #sends the msgtype 33 for all the bots (except self)
-            dnc_prefix_send(bot, prefix)
-            time.sleep(1)
-            #leader is not listening to himself on the broadcast message!! #HackyCode
-            tempRand = rnd_gen()
-            #print "temprand= " + str(tempRand)
-            send_msg = dnc_prepare_sendmsg(bot,leftNeighbour,tempRand, prefix)
-            bot.say(".commandme 34," + send_msg + ',EOM')
+# PAck and unpack msg + prefix #Fix the multiple simultaneous round of communication
+def msgPrefixSplitter(msgprefix):
+    msg, prefix = msgprefix.split(',')
+    return msg, prefix
 
-            #flush the tempsup, preparing for calculation
-            tempsum = None
+def msgPrefixPacker(msg, prefix):
+    return str(msg) + "," + prefix
+
+
+
+
+def dnc_complete(bot, msgType, fromNick, toNick, in_msg,prefix="00000000"):
+
+    global tempRand, leftRand, tempsum, number_of_users_done
+    print "#debug: msgType in_msg " + msgType + " : " + in_msg
+    if msgType == "32":
+        round_prefix = prefix
+        msg = in_msg
+    else:
+        msg, round_prefix = msgPrefixSplitter(in_msg)
+
+
+    # 32 - Starts the dnc, leader broadcasts the prefix with msgtype 33
+    if msgType == '32' and bot.nick == LEADERNICK:
+        print "msgtype 32 LEADER for prefix: " + prefix
+
+        #sends the msgtype 33 for all the bots (except self) : prefix
+        bot.say(".commandme 33,"+LEADERNICK+","+"ALL"+","+msgPrefixPacker(prefix,prefix)+",EOM")
+        time.sleep(1)
+        #leader is not listening to himself on the broadcast message!! #HackyCode
+        tempRand = rnd_gen()
+        send_msg = dnc_prepare_sendmsg(bot,leftNeighbour,tempRand, prefix)
+        bot.say(".commandme 34," + msgPrefixPacker(send_msg,prefix) + ',EOM')
+
+        #flush the tempsup, preparing for calculation
+        tempsum = None
+        number_of_users_done = None
 
         # 33 - all the bots start reading the prefix and send their 0 or 1 to their left Neighbour
-        if msgType == '33' and toNick == "ALL" and fromNick == LEADERNICK:
-            print "msgtype=33" #4debug
-            tempRand = rnd_gen()
-            #print "33 temprand= " + str(tempRand)
+    if msgType == '33' and fromNick == LEADERNICK and prefix == round_prefix:
+        print "msgtype=33" #4debug
+        tempRand = rnd_gen()
+        #print "33 temprand= " + str(tempRand)
 
-            send_msg = dnc_prepare_sendmsg(bot,leftNeighbour,tempRand, msg)
-            #dnc_prepare_sendmsg(bot,leftNeighbourNick,rand_num, prefix=None, btcAdd=None)
-            bot.say(".commandme 34," + send_msg + ',EOM')
+        send_msg = dnc_prepare_sendmsg(bot,leftNeighbour,tempRand, msg)
+        #dnc_prepare_sendmsg(bot,leftNeighbourNick,rand_num, prefix=None, btcAdd=None)
+        bot.say(".commandme 34," + msgPrefixPacker(send_msg,prefix) + ',EOM')
 
         # 34 - every bot including the leader starts to get their msg from their right neighbour and broadcast the difference
-        if msgType == "34" and toNick == bot.nick and fromNick == rightNeighbour:
-            print "msgtype=34" #4debug
-            #print "34 temprand= " + str(tempRand)
+    if msgType == "34" and toNick == bot.nick and fromNick == rightNeighbour and prefix == round_prefix:
+        print "msgtype=34" #4debug
+        #print "34 temprand= " + str(tempRand)
 
-            decrypted_msg = dnc_received_msg(bot, msg, tempRand)
-            broadcast_msg = decrypted_msg[0]
-            leftRand = decrypted_msg[1]
-            bot.say(".commandme 35,"+ broadcast_msg + ',EOM')
-            #print broadcast_msg
+        decrypted_msg = dnc_received_msg(bot, msg, tempRand)
+        broadcast_msg = decrypted_msg[0]
+        leftRand = decrypted_msg[1]
+        bot.say(".commandme 35,"+ msgPrefixPacker(broadcast_msg,prefix) + ',EOM')
+        #print broadcast_msg
 
 
 
         #35 leader reads all the differences and checks the message (0, 1 or >1)
-        if msgType == "35" and toNick == LEADERNICK and bot.nick == LEADERNICK:
-            print "msgtype=35" #4debug
-            #print "35 temprand= " + str(tempRand)
+    if msgType == "35" and toNick == LEADERNICK and bot.nick == LEADERNICK and prefix == round_prefix:
+        print "msgtype=35" #4debug
+        #print "35 temprand= " + str(tempRand)
 
-            time.sleep(1) #sleep till leader gets leftRand #dirtysolution
-            if tempsum == None:
-                tempsum = tempRand - int(leftRand)
-                tempsum += int(msg)
-            elif tempsum:
-                tempsum += int(msg)
-            if 0 <= abs(tempsum) < numberOfGroup+1:
-                if abs(tempsum) == 0:
-                    print "sum = 0 on prefix: " + prefix
-                elif abs(tempsum) == 1:
-                    print "ask for the address on prefix: " + prefix #4debug
-                    print "################################################"
-                elif abs(tempsum) > 1:
-                    print "tempsum >1 : " + str(tempsum) + "on prefix: " + prefix
-                    dnc_complete(bot, "32", leftNeighbour, LEADERNICK, msg, prefix+"0")
-                    time.sleep(5)
-                    dnc_complete(bot, "32", leftNeighbour, LEADERNICK, msg, prefix+"1")
+        #time.sleep(1) #sleep till leader gets leftRand #dirtysolution
+        if tempsum == None and number_of_users_done == None:
+            tempsum = tempRand - int(leftRand)
+            tempsum += int(msg)
+            number_of_users_done = 1
+            print "tempsum = None :" + str(tempsum)
+        elif tempsum:
+            tempsum += int(msg)
+            number_of_users_done += 1
+            print "tempsum != None :" + str(tempsum)
 
-                print "number of matches =" + str(tempsum) #log
-                #bot.say("The number of matches is: " + str(abs(tempsum)))
-            #TODO: Should add all the modes <-- HERE IS WHERE THE MAGIC SHOULD HAPPEN!
-            #bot.say ("testing message value"+msg)
-            print "tempsum= " + str(tempsum)
+        if number_of_users_done == numberOfGroup and 0 <= abs(tempsum) < numberOfGroup+1:
+            if abs(tempsum) == 0:
+                print "sum = 0 on prefix: " + prefix
+            elif abs(tempsum) == 1:
+                print "ask for the address on prefix: " + prefix #4debug
+                print "################################################"
+            elif abs(tempsum) > 1:
+                print "tempsum >1 : " + str(tempsum) + "on prefix: " + prefix
+                bot.say("The number of matches is: " + str(tempsum)) #4debug
+
+                dnc_complete(bot, "32", leftNeighbour, LEADERNICK, msgPrefixPacker(msg,prefix+"0"), prefix+"0")
+                dnc_complete(bot, "32", leftNeighbour, LEADERNICK, msgPrefixPacker(msg,prefix+"1"), prefix+"1")
+
+            print "number of matches =" + str(tempsum) #log
+            bot.say("The number of matches is: " + str(tempsum)) #4debug
+        #TODO: Should add all the modes <-- HERE IS WHERE THE MAGIC SHOULD HAPPEN!
+        #bot.say ("testing message value"+msg)
+        print "tempsum= " + str(tempsum)
 
 
 
@@ -826,8 +868,7 @@ def dnc_complete(bot, msgType, fromNick, toNick, msg,prefix):
 
 
 
-    #print "Prefix: " + prefix
-
+        #print "Prefix: " + prefix
 
 
 
@@ -883,7 +924,7 @@ def readcommand(bot,trigger):
             elif not (tempsum == 0):
                 tempsum += int(msg)
             if tempsum == 0:
-                print "Message = 0" #log
+                print "init Message = 0" #log
                 bot.say(".commandme 31,"+bot.nick+","+leftNeighbour+","+"let's Dine"+",EOM") #trick to initiate the leader's output ordering
             #bot.say("4debug tempsum= "+ str(tempsum) +" tempRand=" + str(tempRand))
 
@@ -897,7 +938,7 @@ def readcommand(bot,trigger):
 
 
         if int(msgType) in xrange(32,40):
-            dnc_complete(bot, msgType, fromNick, toNick, msg, "00000000")
+            dnc_complete(bot, msgType, fromNick, toNick, msg)
 
        #          == "32" and toNick == LEADERNICK and bot.nick == LEADERNICK:
        #      #start the output ordering range

@@ -162,6 +162,201 @@ def btc_divideandconquer(prefix, btcAddress_tuple, lock):
 
 
 
+def btc_binarytree(prefix, btcAddress_tuple):
+    """
+    btcAddress_tuple --> [user] = [btcaddress]
+    prefix starts with 000000001
+
+    :param prefix:
+    :param btcAddress_tuple:
+    :return:
+    """
+    matched_item = None
+ #   matched_keys = 0
+
+    yes_prefix_num = 0
+    root = Node(prefix)
+    #generate the tree
+    tree_prefix= prefix
+    while (yes_prefix_num < len(btcAddress_tuple)):
+        matched_keys = 0
+        root.insert(tree_prefix)
+        for item in btcAddress_tuple:
+            if item[1].startswith(tree_prefix):
+                matched_item = item[0]
+                matched_keys+=1
+        print "# Matched Keys:"+str(matched_keys)
+
+
+        if matched_keys == 0:
+            print "None on Prefix " + tree_prefix
+            tree_prefix = root.travel_back(tree_prefix)
+            root.delete(tree_prefix)
+
+        if matched_keys == 1:
+            yes_prefix_num += 1
+            print "#                       1 match on prefix: "+ tree_prefix + " = " + matched_item
+            root.travel_back(tree_prefix)
+
+
+
+        if matched_keys > 1:
+            root.insert(tree_prefix+"0")
+            tree_prefix = tree_prefix + "0"
+            root.insert(tree_prefix+"1")
+
+        root.print_tree()
+
+
+
+##### TREE
+class Node:
+    """
+    Tree node: left and right child + data which can be any object
+    """
+    def __init__(self, data):
+        """
+        Node constructor
+        @param data node data object
+        """
+        self.left = None
+        self.right = None
+        self.data = data
+
+    def insert(self, data):
+        """
+        Insert new node with data
+        @param data node data object to insert
+
+        left: checks that len(child) should be bigger than the len(parent)
+              and the integer value should be smaller or equal (in our case equal)
+
+        """
+        if len(self.data) < len(data) and int(data) <= int(self.data):
+            if self.left is None:
+                self.left = Node(data)
+            else:
+                self.left.insert(data)
+        elif data > self.data and int(data) > int(self.data):
+            if self.right is None:
+                self.right = Node(data)
+            else:
+                self.right.insert(data)
+
+
+    def lookup(self, data, parent=None):
+        """
+        Lookup node containing data
+        @param data node data object to look up
+        @param parent node's parent
+        @returns node and node's parent if found or None, None
+        """
+        if len(self.data) < len(data) and int(data) <= int(self.data):
+            if self.left is None:
+                return None, None
+            return self.left.lookup(data, self)
+        elif data > self.data and int(data) > int(self.data):
+            if self.right is None:
+                return None, None
+            return self.right.lookup(data, self)
+        else:
+            return self, parent
+
+    def delete(self, data):
+        """
+        Delete node containing data
+        @param data node's content to delete
+        """
+        # get node containing data
+        node, parent = self.lookup(data)
+        if node is not None:
+            children_count = node.children_count()
+            if children_count == 0:
+                # if node has no children, just remove it
+                if parent.left is node:
+                    parent.left = None
+                else:
+                    parent.right = None
+                del node
+
+            #   does not need to check for these!
+            # elif children_count == 1:
+            #     # if node has 1 child
+            #     # replace node by its child
+            #     if node.left:
+            #         n = node.left
+            #     else:
+            #         n = node.right
+            #     if parent:
+            #         if parent.left is node:
+            #             parent.left = n
+            #         else:
+            #             parent.right = n
+            #     del node
+            # else:
+            #     # if node has 2 children
+            #     # find its successor
+            #     parent = node
+            #     successor = node.right
+            #     while successor.left:
+            #         parent = successor
+            #         successor = successor.left
+            #     # replace node data by its successor data
+            #     node.data = successor.data
+            #     # fix successor's parent node child
+            #     if parent.left == successor:
+            #         parent.left = successor.right
+            #     else:
+            #         parent.right = successor.right
+
+    def children_count(self):
+        """
+        Return the number of children
+        @returns number of children: 0, 1, 2
+        """
+        cnt = 0
+        if self.left:
+            cnt += 1
+        if self.right:
+            cnt += 1
+        return cnt
+
+    def travel_back(self, data):
+        """
+        travel back until find a node without right child
+        """
+        node, parent = self.lookup(data)
+        while not (parent.right):
+            node, parent = self.lookup(parent.data)
+        return node
+
+
+    def print_tree(self):
+        """
+        Print tree content inorder
+        """
+        if self.left:
+            self.left.print_tree()
+        print self.data,
+        if self.right:
+            self.right.print_tree()
+
+    def tree_data(self):
+        """
+        Generator to get the tree nodes data
+        """
+        # we use a stack to traverse the tree in a non-recursive way
+        stack = []
+        node = self
+        while stack or node:
+            if node:
+                stack.append(node)
+                node = node.left
+            else: # we are returning so we pop the node and we yield it
+                node = stack.pop()
+                yield node.data
+                node = node.right
+
 
 
 if __name__ == "__main__" :
@@ -197,7 +392,13 @@ Testgroup_binary -> [BTCAddress] = [BTCAddress_Binary]
     testgroup_binary = {}
     test_joingroup = {}
 
-    for i in range(0,100):
+    if "000" > "0000":
+        print "000 > 0000"
+    else:
+        print "0000 > 000"
+
+
+    for i in range(0,5):
         bit_address, bit_priv = set_bitcoin_address()
         testgroup[bit_address] = bit_priv
         testgroup_binary[bit_address] = base58_to_binary(bit_address)
@@ -229,6 +430,12 @@ Testgroup_binary -> [BTCAddress] = [BTCAddress_Binary]
     lock2 = thread.allocate_lock()
     time.sleep(1)
     btc_divideandconquer("00000000", setkeys_binary, lock)
+    #btc_binarytree("00000000", setkeys_binary)
+
+
+
+
+
 
   #  print base58_to_binary("1z")
 
